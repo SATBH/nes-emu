@@ -287,7 +287,7 @@ fn execute_step(state: &mut NesEmulator) {
             // setting the flag if overflow would occur
             state.status.set_from_bool(StatusFlag::Carry, acc + op > u8::MAX.into());
 
-            let result = state.accumulator + operand;
+            let result = state.accumulator.wrapping_add(operand);
 
             // set the appropiate flags based on result
             state.status.set_from_bool(StatusFlag::Zero, result == 0);
@@ -299,9 +299,10 @@ fn execute_step(state: &mut NesEmulator) {
             state.program_counter += instruction_size;
             //state.status |= 
         },
-        //Bitwise AND/OR between accumulator and operand
+        //Bitwise AND/OR/EOR between accumulator and operand
         0x29 | 0x25 | 0x35 | 0x2D | 0x3D | 0x39 | 0x21 | 0x31 |
-        0x09 | 0x05 | 0x15 | 0x0D | 0x1D | 0x19 | 0x01 | 0x11
+        0x09 | 0x05 | 0x15 | 0x0D | 0x1D | 0x19 | 0x01 | 0x11 |
+        0x49 | 0x45 | 0x55 | 0x4D | 0x5D | 0x59 | 0x41 | 0x51
         => {
             let (addressing, instruction_size) = OpCodeInfo[opcode as usize];
             //could do this directly on accumulator, but im trusting the compiler again and using
@@ -314,6 +315,10 @@ fn execute_step(state: &mut NesEmulator) {
                 // ORA
                 0x09 | 0x05 | 0x15 | 0x0D | 0x1D | 0x19 | 0x01 | 0x11 => {
                     state.accumulator | operand
+                },
+                // EOR
+                0x49 | 0x45 | 0x55 | 0x4D | 0x5D | 0x59 | 0x41 | 0x51 => {
+                    state.accumulator ^ operand
                 },
                 _ => unreachable!()
             };
@@ -384,12 +389,12 @@ fn execute_step(state: &mut NesEmulator) {
         },
         // PLA | PLP. Pulls values from the stack
         0x68 | 0x28 => {
-            let value_to_store = if opcode == 0x48 {state.accumulator} else {state.status.0};
+            let register = if opcode == 0x48 {&mut state.accumulator} else {&mut state.status.0};
             // 0x1000 offsets the value to the 01 page rather than the zero page.
             state.stack += 1;
             // Changing the interrupt disable flag in the processor status flags should take one
             // more cycle but i will assume it does not matter for now
-            state.bus.get_u8_at_address(0x0100 + state.stack as u16);
+            *register = state.bus.get_u8_at_address(0x0100 + state.stack as u16);
         },
         // ROR
         0x6A | 0x66 | 0x76 | 0x6E | 0x7E |
@@ -404,10 +409,13 @@ fn execute_step(state: &mut NesEmulator) {
                 },
                 0x2A | 0x26 | 0x36 | 0x2E | 0x3E => {
                     state.status.set_from_bool(StatusFlag::Carry, (operand >> 7) != 0);
-                    operand << 1 + carry_mask
+                    operand << 1 | carry_mask
                 },
                 _ => unreachable!()
             };
+
+            state.status.set_from_bool(StatusFlag::Zero, result == 0);
+            state.status.set_from_bool(StatusFlag::Negative, (result >> 7) == 0);
 
             match addressing {
                 AddressingMode::Accumulator => {
@@ -434,7 +442,7 @@ fn execute_step(state: &mut NesEmulator) {
                 }
             }
         }
-        //jumping instructions. BCC, BCS, BEQ
+        //jumping instructions. 
         op @ (0x90 | 0xB0 | 0xF0 | 0x30 | 0xD0 | 0x10| 0x50 | 0x70) => {
             let condition = match op {
                 // BCC jumps if carry is clear
@@ -501,7 +509,7 @@ fn execute_step(state: &mut NesEmulator) {
         //CMP. Compares the A register with operand
         (0xC9 | 0xC5 | 0xD5 | 0xCD | 0xDD | 0xD9 | 0xC1 | 0xD1) => {
             // Subtraction of A with operand using some bit trickery to do with u8s.
-            let result = state.accumulator.wrapping_add(1 + !operand);
+            let result = state.accumulator.wrapping_add((!operand).wrapping_add(1));
             state.status.set_from_bool(StatusFlag::Carry, state.accumulator >= operand);
             state.status.set_from_bool(StatusFlag::Zero, state.accumulator == operand);
             state.status.set_from_bool(StatusFlag::Negative, (state.accumulator >> 7) != 0);
@@ -592,13 +600,31 @@ fn execute_step(state: &mut NesEmulator) {
             let result = state.accumulator & operand;
             state.status.set_from_bool(StatusFlag::Zero, result == 0);
             state.status.set_from_bool(StatusFlag::Overflow, (operand & 0b01000000) != 0);
-            state.status.set_from_bool(StatusFlag::Negative, (operand & 0b01000000) != 0);
-
+            state.status.set_from_bool(StatusFlag::Negative, (operand & 0b10000000) != 0);
         },
-        0x4c => { 
-            //gets the 2 bytes that follow the opcode
+        // JMP
+        0x4c | 0x6c => { 
+            //gets the 2 bytes that follow the opcode as the address to jump to
+            let address: u16 = state.bus.get_u16_at_address(1 + state.program_counter);
+            match addressing {
+                AddressingMode::Absolute => {state.program_counter = address;},
+                AddressingMode::Indirect => {state.program_counter = state.bus.get_u16_at_address(address);},
+                _ => unreachable!()
+            }
+        },
+        // JSR jump to subroutine
+        0x20 => {
+            // stores the address of the next instruction into the stack
+            // address should be stored by pushing the high bits first and then the low bits
+            state.bus.write_u8_at_address(0x0100 + state.stack as u16, ((state.program_counter + instruction_size) >> 8) as u8);
+            state.stack -= 1;
+
+            state.bus.write_u8_at_address(0x0100 + state.stack as u16, (state.program_counter + instruction_size) as u8);
+            state.stack -= 1;
+            // get address 
             let address: u16 = state.bus.get_u16_at_address(1 + state.program_counter);
             state.program_counter = address;
+
         },
         0x78 => { 
             //state.status &= StatusFlag::InterruptDisable as u8;
@@ -609,6 +635,28 @@ fn execute_step(state: &mut NesEmulator) {
             // state.bus[address as usize] = state.accumulator;
             print!("address modified {:#x}\n", address);
             state.program_counter += 3;
+        }
+        // Transfer between registers instructions 
+        0xAA | 0xA8 | 0xBA | 0x8A | 0x9A | 0x98 => {
+            let source = match opcode {
+                0xAA | 0xA8 => state.accumulator,
+                0xBA  => state.stack,
+                0x8A | 0x9A => state.x,
+                0x98 => state.y,
+                _ => unreachable!()
+            };
+            let destination = match opcode {
+                0xAA | 0xBA => &mut state.x,
+                0xA8 => &mut state.y,
+                0x8A | 0x98 => &mut state.accumulator,
+                0x9A => &mut state.stack,
+                _ => unreachable!()
+            };
+
+            *destination = source;
+            state.status.set_from_bool(StatusFlag::Zero, *destination == 0);
+            state.status.set_from_bool(StatusFlag::Negative, (*destination >> 7) != 0);
+            
         }
         0xA9 => { 
             state.accumulator = state.bus.get_u8_at_address(state.program_counter + 1);
