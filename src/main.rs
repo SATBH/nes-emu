@@ -249,6 +249,7 @@ const OpCodeInfo: [(CpuInstruction, AddressingMode, u16, u8); 256] = {
     //since its 0 most likely.
     let mut temp: [(CpuInstruction, AddressingMode, u16, u8); 256] = unsafe {std::mem::zeroed()};
 
+    // arithmetic instructions
     temp[0x69] = (ADC, Immediate, 2, 2);
     temp[0x65] = (ADC, ZeroPage, 2, 3);
     temp[0x75] = (ADC, ZeroPageX, 2, 4);
@@ -257,6 +258,14 @@ const OpCodeInfo: [(CpuInstruction, AddressingMode, u16, u8); 256] = {
     temp[0x79] = (ADC, AbsoluteY, 3, 4);
     temp[0x61] = (ADC, IndirectX, 2, 6);
     temp[0x71] = (ADC, IndirectY, 2, 5);
+    temp[0xE9] = (SBC, Immediate, 2, 2);
+    temp[0xE5] = (SBC, ZeroPage, 2, 3);
+    temp[0xF5] = (SBC, ZeroPageX, 2, 4);
+    temp[0xED] = (SBC, Absolute, 3, 4);
+    temp[0xFD] = (SBC, AbsoluteX, 3, 4);
+    temp[0xF9] = (SBC, AbsoluteY, 3, 4);
+    temp[0xE1] = (SBC, IndirectX, 2, 6);
+    temp[0xF1] = (SBC, IndirectY, 2, 5);
 
     temp[0x29] = (AND, Immediate,	2, 2);
     temp[0x25] = (AND, ZeroPage,	2, 3);
@@ -267,6 +276,7 @@ const OpCodeInfo: [(CpuInstruction, AddressingMode, u16, u8); 256] = {
     temp[0x21] = (AND, IndirectX,	2, 6);
     temp[0x31] = (AND, IndirectY,	2, 5);
 
+    // shift left
     temp[0x0A] = (ASL, Accumulator, 1, 2);
     temp[0x06] = (ASL, ZeroPage,		2, 5);
     temp[0x16] = (ASL, ZeroPageX,		2, 6);
@@ -395,9 +405,36 @@ const OpCodeInfo: [(CpuInstruction, AddressingMode, u16, u8); 256] = {
 
 
     // Return from Interrupt
-    // TODO
+    temp[0x40] = (RTI, Implied, 1, 6);
+    temp[0x60] = (RTS, Implied, 1, 6);
 
+    // Flag setting
+    temp[0x38] = (SEC, Implied, 1, 6);
+    temp[0xf8] = (SED, Implied, 1, 6);
+    temp[0x78] = (SEI, Implied, 1, 6);
+    
+    // memory write
+    temp[0x85] = (STA, ZeroPage, 2, 3);
+    temp[0x95] = (STA, ZeroPageX, 2, 4);
+    temp[0x8D] = (STA, Absolute, 3, 4);
+    temp[0x9D] = (STA, AbsoluteX, 3, 5);
+    temp[0x99] = (STA, AbsoluteY, 3, 5);
+    temp[0x81] = (STA, IndirectX, 2, 6);
+    temp[0x91] = (STA, IndirectY, 2, 6);
+    temp[0x86] = (STX, ZeroPage, 2, 3);
+    temp[0x96] = (STX, ZeroPageY, 2, 4);
+    temp[0x8E] = (STX, Absolute, 3, 4);
+    temp[0x84] = (STY, ZeroPage, 2, 3);
+    temp[0x94] = (STY, ZeroPageX, 2, 4);
+    temp[0x8C] = (STY, Absolute, 3, 4);
 
+    //register transfer instructions
+    temp[0xAA] = (TAX, Implied, 1, 2);
+    temp[0xA8] = (TAY, Implied, 1, 2);
+    temp[0xBA] = (TSX, Implied, 1, 2);
+    temp[0x8A] = (TXA, Implied, 1, 2);
+    temp[0x9A] = (TXS, Implied, 1, 2);
+    temp[0x98] = (TYA, Implied, 1, 2);
 
     //NOP
     temp[0xEA] = (NOP, Implied, 1, 2);
@@ -405,7 +442,6 @@ const OpCodeInfo: [(CpuInstruction, AddressingMode, u16, u8); 256] = {
 
     temp[0x24] = (BIT, ZeroPage, 2, 3);
     temp[0x2C] = (BIT, Absolute, 3, 4);
-
 
     temp
 };
