@@ -83,7 +83,6 @@ impl NesEmulator {
             accumulator: 0,
             x: 0,
             y: 0,
-
             stack: 0xFD,
             status: Status(0x34),
             bus,
@@ -92,7 +91,7 @@ impl NesEmulator {
     pub fn get_current_opcode_operand(self: &Self) -> (u8, u8) {
         let state = self;
         let opcode = state.bus.get_u8_at_address(state.program_counter);
-        let (addressing, instruction_size) = OpCodeInfo[opcode as usize];
+        let (_, addressing, instruction_size, _) = OpCodeInfo[opcode as usize];
         let operand = match addressing {
             // Doesn't use an operand and works on registers directly instead
             AddressingMode::Implied => 0,
@@ -151,7 +150,7 @@ impl NesEmulator {
                 //us in the zero page)
                 let mut address: u8 = state.bus.get_u8_at_address(1 + state.program_counter);
                 //adds offset
-                address += state.x;
+                address = address.wrapping_add(state.x);
                 //gets address at address 
                 address = state.bus.get_u8_at_address(address as u16);
                 // returns value
@@ -163,10 +162,10 @@ impl NesEmulator {
                 //gets the address as u16 so that addition with Y can work like using the carry
                 //bit for addition
                 let mut address: u16 = state.bus.get_u8_at_address(1 + state.program_counter) as u16;
-                //adds offset
-                address += state.y as u16;
                 //gets address at address 
                 address = state.bus.get_u8_at_address(address) as u16;
+                //adds offset
+                address += state.y as u16;
                 // returns value
                 state.bus.get_u8_at_address(address)
             },
@@ -233,38 +232,180 @@ pub enum AddressingMode {
     Relative,
 }
 
-const OpCodeInfo: [(AddressingMode, u16); 256] = {
+#[derive(Debug, Clone, Copy)]
+pub enum CpuInstruction {
+    ADC,AND,ASL,BCC,BCS,BEQ,BIT,BMI,BNE,BPL,BRK,BVC,BVS,CLC,
+    CLD,CLI,CLV,CMP,CPX,CPY,DEC,DEX,DEY,EOR,INC,INX,INY,JMP,
+    JSR,LDA,LDX,LDY,LSR,NOP,ORA,PHA,PHP,PLA,PLP,ROL,ROR,RTI,
+    RTS,SBC,SEC,SED,SEI,STA,STX,STY,TAX,TAY,TSX,TXA,TXS,TYA
+}
+
+// Instruction type, addressing mode, size, minimum cycle count
+const OpCodeInfo: [(CpuInstruction, AddressingMode, u16, u8); 256] = {
     use AddressingMode::*;
+    use CpuInstruction::*;
     //not safe, but we expect that the unitialized parts of the array are never accessed as they
     //would have invalid addressing modes (probably they count as the Immediate addressing mode
     //since its 0 most likely.
-    let mut temp: [(AddressingMode, u16); 256] = unsafe {std::mem::zeroed()};
-    // ADC Add with carry to accumulator 
-    temp[0x69] = (Immediate, 2);
-    temp[0x65] = (ZeroPage, 2);
-    temp[0x75] = (ZeroPageX, 2);
-    temp[0x6D] = (Absolute, 3);
-    temp[0x7D] = (AbsoluteX, 3);
-    temp[0x79] = (AbsoluteY, 3);
-    temp[0x61] = (IndirectX, 3);
-    temp[0x71] = (IndirectY, 3);
-    // AND with accumulator
-    temp[0x29] = (Immediate,	2);
-    temp[0x25] = (ZeroPage,	2);
-    temp[0x35] = (ZeroPageX,	2);
-    temp[0x2D] = (Absolute,	3);
-    temp[0x3D] = (AbsoluteX,	3);
-    temp[0x39] = (AbsoluteY,	3);
-    temp[0x21] = (IndirectX,	2);
-    temp[0x31] = (IndirectY,	2);
-    // ASL Shift Left one bit
-    temp[0x0A] = (Accumulator, 1);
-    temp[0x06] = (ZeroPage,		2);
-    temp[0x16] = (ZeroPageX,		2);
-    temp[0x0E] = (Absolute,		3);
-    temp[0x1E] = (AbsoluteX,		3);
-    // BCC
-    temp[0x90] = (Relative, 2);
+    let mut temp: [(CpuInstruction, AddressingMode, u16, u8); 256] = unsafe {std::mem::zeroed()};
+
+    temp[0x69] = (ADC, Immediate, 2, 2);
+    temp[0x65] = (ADC, ZeroPage, 2, 3);
+    temp[0x75] = (ADC, ZeroPageX, 2, 4);
+    temp[0x6D] = (ADC, Absolute, 3, 4);
+    temp[0x7D] = (ADC, AbsoluteX, 3, 4);
+    temp[0x79] = (ADC, AbsoluteY, 3, 4);
+    temp[0x61] = (ADC, IndirectX, 2, 6);
+    temp[0x71] = (ADC, IndirectY, 2, 5);
+
+    temp[0x29] = (AND, Immediate,	2, 2);
+    temp[0x25] = (AND, ZeroPage,	2, 3);
+    temp[0x35] = (AND, ZeroPageX,	2, 4);
+    temp[0x2D] = (AND, Absolute,	3, 4);
+    temp[0x3D] = (AND, AbsoluteX,	3, 4);
+    temp[0x39] = (AND, AbsoluteY,	3, 4);
+    temp[0x21] = (AND, IndirectX,	2, 6);
+    temp[0x31] = (AND, IndirectY,	2, 5);
+
+    temp[0x0A] = (ASL, Accumulator, 1, 2);
+    temp[0x06] = (ASL, ZeroPage,		2, 5);
+    temp[0x16] = (ASL, ZeroPageX,		2, 6);
+    temp[0x0E] = (ASL, Absolute,		3, 6);
+    temp[0x1E] = (ASL, AbsoluteX,		3, 7);
+    // branching instructions
+    temp[0x90] = (BCC, Relative, 2, 2);
+    temp[0xB0] = (BCS, Relative, 2, 2);
+    temp[0xF0] = (BEQ, Relative, 2, 2);
+    temp[0xB0] = (BCS, Relative, 2, 2);
+    temp[0x30] = (BMI, Relative, 2, 2);
+    temp[0xD0] = (BNE, Relative, 2, 2);
+    temp[0x10] = (BPL, Relative, 2, 2);
+    temp[0x50] = (BVC, Relative, 2, 2);
+    temp[0x70] = (BVS, Relative, 2, 2);
+    // clear instructions 
+    temp[0x18] = (CLC, Implied, 1, 2);
+    temp[0xD8] = (CLD, Implied, 1, 2);
+    temp[0x58] = (CLI, Implied, 1, 2);
+    temp[0xB8] = (CLV, Implied, 1, 2);
+    // Break instruction. It has weird documentation, seems like this is the best info i can put
+    temp[0x00] = (BRK, Implied, 2, 7);
+
+    // Comparison instructions
+    temp[0xc9] = (CMP, Immediate, 2, 2);
+    temp[0xc5] = (CMP, ZeroPage, 2, 3);
+    temp[0xd5] = (CMP, ZeroPageX, 2, 4);
+    temp[0xcd] = (CMP, Absolute, 3, 4);
+    temp[0xdd] = (CMP, AbsoluteX, 3, 4);
+    temp[0xd9] = (CMP, AbsoluteY, 3, 4);
+    temp[0xc1] = (CMP, IndirectX, 2, 6);
+    temp[0xd1] = (CMP, IndirectY, 2, 5);
+    temp[0xE0] = (CPX, Immediate, 2, 2);
+    temp[0xE4] = (CPX, ZeroPage, 2, 3);
+    temp[0xEC] = (CPX, Absolute, 3, 4);
+    temp[0xC0] = (CPY, Immediate, 2, 2);
+    temp[0xC4] = (CPY, ZeroPage, 2, 3);
+    temp[0xCC] = (CPY, Absolute, 3, 4);
+
+    // Decrement Instructions 
+    temp[0xC6] = (DEC, ZeroPage, 2, 5);
+    temp[0xD6] = (DEC, ZeroPageX, 2, 6);
+    temp[0xCE] = (DEC, Absolute, 3, 6);
+    temp[0xDE] = (DEC, AbsoluteX, 3, 7);
+    temp[0xCA] = (DEX, Implied, 1, 2);
+    temp[0x88] = (DEY, Implied, 1, 2);
+
+    // Increment Instructions
+    temp[0xE6] = (INC, ZeroPage, 2, 5);
+    temp[0xF6] = (INC, ZeroPageX, 2, 6);
+    temp[0xEE] = (INC, Absolute, 3, 6);
+    temp[0xFE] = (INC, AbsoluteX, 3, 7);
+    temp[0xE8] = (INX, Implied, 1, 2);
+    temp[0xC8] = (INY, Implied, 1, 2);
+
+    // Jumping instructions
+    temp[0x4C] = (JMP, Absolute, 3, 3);
+    temp[0x6C] = (JMP, Indirect, 3, 5);
+    temp[0x20] = (JSR, Absolute, 3, 6);
+
+    // Load instructions
+    temp[0xA9] = (LDA, Immediate, 2, 2);
+    temp[0xA5] = (LDA, ZeroPage, 2, 3);
+    temp[0xB5] = (LDA, ZeroPageX, 2, 4);
+    temp[0xAD] = (LDA, Absolute, 3, 4);
+    temp[0xBD] = (LDA, AbsoluteX, 3, 4);
+    temp[0xB9] = (LDA, AbsoluteY, 3, 4);
+    temp[0xA1] = (LDA, IndirectX, 2, 6);
+    temp[0xB1] = (LDA, IndirectY, 2, 5);
+    temp[0xA2] = (LDX, Immediate, 2, 2);
+    temp[0xA6] = (LDX, ZeroPage, 2, 3);
+    temp[0xB6] = (LDX, ZeroPageY, 2, 4);
+    temp[0xAE] = (LDX, Absolute, 3, 4);
+    temp[0xBE] = (LDX, AbsoluteY, 3, 4);
+    temp[0xA0] = (LDY, Immediate, 2, 2);
+    temp[0xA4] = (LDY, ZeroPage, 2, 3);
+    temp[0xB4] = (LDY, ZeroPageX, 2, 4);
+    temp[0xAC] = (LDY, Absolute, 3, 4);
+    temp[0xBC] = (LDY, AbsoluteX, 3, 4);
+
+    // Logical shift
+    temp[0x4A] = (LSR, Accumulator, 1, 2);
+    temp[0x46] = (LSR, ZeroPage, 2, 5);
+    temp[0x56] = (LSR, ZeroPageX, 2, 6);
+    temp[0x4E] = (LSR, Absolute, 3, 6);
+    temp[0x5E] = (LSR, AbsoluteX, 3, 7);
+
+    // Exclusive OR
+    temp[0x49] = (EOR, Immediate, 2, 2);
+    temp[0x45] = (EOR, ZeroPage, 2, 3);
+    temp[0x55] = (EOR, ZeroPageX, 2, 4);
+    temp[0x4D] = (EOR, Absolute, 3, 4);
+    temp[0x5D] = (EOR, AbsoluteX, 3, 4);
+    temp[0x59] = (EOR, AbsoluteY, 3, 4);
+    temp[0x41] = (EOR, IndirectX, 2, 6);
+    temp[0x51] = (EOR, IndirectY, 2, 5);
+
+    // Bitwise OR
+    temp[0x09] = (ORA, Immediate, 2, 2);
+    temp[0x05] = (ORA, ZeroPage, 2, 3);
+    temp[0x15] = (ORA, ZeroPageX, 2, 4);
+    temp[0x0D] = (ORA, Absolute, 3, 4);
+    temp[0x1D] = (ORA, AbsoluteX, 3, 4);
+    temp[0x19] = (ORA, AbsoluteY, 3, 4);
+    temp[0x01] = (ORA, IndirectX, 2, 6);
+    temp[0x11] = (ORA, IndirectY, 2, 5);
+
+    // stack push instructions
+    temp[0x48] = (PHA, Implied, 1, 3);
+    temp[0x08] = (PHP, Implied, 1, 3);
+    // stack pull instructions
+    temp[0x68] = (PLA, Implied, 1, 4);
+    temp[0x28] = (PLP, Implied, 1, 4);
+
+    // Rotate instrunctions
+    temp[0x2A] = (ROL, Accumulator, 1, 2);
+    temp[0x26] = (ROL, ZeroPage, 2, 5);
+    temp[0x36] = (ROL, ZeroPageX, 2, 6);
+    temp[0x2E] = (ROL, Absolute, 3, 6);
+    temp[0x3E] = (ROL, AbsoluteX, 3, 7);
+    temp[0x6A] = (ROR, Accumulator, 1, 2);
+    temp[0x66] = (ROR, ZeroPage, 2, 5);
+    temp[0x76] = (ROR, ZeroPageX, 2, 6);
+    temp[0x6E] = (ROR, Absolute, 3, 6);
+    temp[0x7E] = (ROR, AbsoluteX, 3, 7);
+
+
+    // Return from Interrupt
+    // TODO
+
+
+
+    //NOP
+    temp[0xEA] = (NOP, Implied, 1, 2);
+
+
+    temp[0x24] = (BIT, ZeroPage, 2, 3);
+    temp[0x2C] = (BIT, Absolute, 3, 4);
+
 
     temp
 };
@@ -272,22 +413,62 @@ const OpCodeInfo: [(AddressingMode, u16); 256] = {
 
 fn execute_step(state: &mut NesEmulator) {
     let (opcode, operand) = state.get_current_opcode_operand();
-    let (addressing, instruction_size) = OpCodeInfo[opcode as usize];
+    let (_, addressing, instruction_size, _) = OpCodeInfo[opcode as usize];
 
     match opcode {
-        // BRK
+        // BRK break or interrupt request
         0x00 => {
-            unimplemented!()
+            unimplemented!("BRK")
         },
-        // Add with carry instructions
+        // RTI return from interrupt
+        0x40 => {
+            unimplemented!("RTI")
+        },
+        // RTS return from subroutine
+        0x60 => {
+            let mut program_counter = 0;
+            // 0x1000 offsets the value to the 01 page rather than the zero page.
+            // get first byte
+            state.stack += 1;
+            program_counter |= state.bus.get_u8_at_address(0x0100 + state.stack as u16) as u16;
+            // get MSB shift it and OR it with the program counter
+            state.stack += 1;
+            program_counter |= (state.bus.get_u8_at_address(0x0100 + state.stack as u16) as u16) << 8;
+            // move program_counter one byte for whatever reason and early return.
+            state.program_counter = program_counter + 1;
+            return;
+        }
+        // SBC subtract with carry
+        0xE9 | 0xE5 | 0xF5 | 0xED | 0xFD | 0xF9 | 0xE1 | 0xF1 => {
+            // Using the formula A = A - operand - ~C = A + ~operand + C
+            // checking for overflow by doing the addition with 16 bits first
+            let acc = state.accumulator as u16;
+            let op = (!operand) as u16;
+            let carry = state.status.get(StatusFlag::Carry) as u8;
+            // setting the flag if overflow would occur
+            state.status.set_from_bool(StatusFlag::Carry, (acc + op + carry as u16) > u8::MAX.into());
+
+            let result = state.accumulator.wrapping_add(operand).wrapping_add(carry);
+
+            // set the appropiate flags based on result
+            state.status.set_from_bool(StatusFlag::Zero, result == 0);
+            state.status.set_from_bool(StatusFlag::Negative, (result >> 7) == 0);
+            // Inverted values from the logic in ADC
+            state.status.set_from_bool(StatusFlag::Overflow, !((state.accumulator ^ result) & (result ^ operand) & 0x80 != 0));
+            state.accumulator = result;
+        }
+
+
+        // ADC. Add with carry instructions
         0x69 | 0x65 | 0x75 | 0x6d | 0x7d | 0x79 | 0x61 | 0x71 => {
             // checking for overflow by doing the addition with 16 bits first
             let acc = state.accumulator as u16;
             let op = operand as u16;
+            let carry = state.status.get(StatusFlag::Carry) as u8;
             // setting the flag if overflow would occur
-            state.status.set_from_bool(StatusFlag::Carry, acc + op > u8::MAX.into());
+            state.status.set_from_bool(StatusFlag::Carry, (acc + op + carry as u16) > u8::MAX.into());
 
-            let result = state.accumulator.wrapping_add(operand);
+            let result = state.accumulator.wrapping_add(operand).wrapping_add(carry);
 
             // set the appropiate flags based on result
             state.status.set_from_bool(StatusFlag::Zero, result == 0);
@@ -296,15 +477,13 @@ fn execute_step(state: &mut NesEmulator) {
             state.status.set_from_bool(StatusFlag::Overflow, (state.accumulator ^ result) & (result ^ operand) & 0x80 != 0);
 
             state.accumulator = result;
-            state.program_counter += instruction_size;
-            //state.status |= 
         },
         //Bitwise AND/OR/EOR between accumulator and operand
         0x29 | 0x25 | 0x35 | 0x2D | 0x3D | 0x39 | 0x21 | 0x31 |
         0x09 | 0x05 | 0x15 | 0x0D | 0x1D | 0x19 | 0x01 | 0x11 |
         0x49 | 0x45 | 0x55 | 0x4D | 0x5D | 0x59 | 0x41 | 0x51
         => {
-            let (addressing, instruction_size) = OpCodeInfo[opcode as usize];
+            //let (addressing, instruction_size) = OpCodeInfo[opcode as usize];
             //could do this directly on accumulator, but im trusting the compiler again and using
             //the result variable for consistency
             let result = match operand {
@@ -325,7 +504,6 @@ fn execute_step(state: &mut NesEmulator) {
             state.status.set_from_bool(StatusFlag::Zero, result == 0);
             state.status.set_from_bool(StatusFlag::Negative, (result >> 7) == 0);
             state.accumulator = result;
-            state.program_counter += instruction_size;
         },
         // ASL Arithmetic Shift Left and LSR logical shift right.
         // Mutates a register, or memory.
@@ -378,7 +556,6 @@ fn execute_step(state: &mut NesEmulator) {
                     unreachable!()
                 }
             }
-            state.program_counter += instruction_size;
         },
         // PHA | PHP. Pushes accumulator or status into the stack.
         0x48 | 0x08 => {
@@ -488,6 +665,7 @@ fn execute_step(state: &mut NesEmulator) {
                 // signed addition, then back to u16 to set it as the program_counter
                 state.program_counter = (state.program_counter as i16 + (operand as i8) as i16) as u16;
             }
+            return
         },
         // Bit clearing instructions
         op @ (0x18 | 0xd8 | 0x58 | 0xb8) => {
@@ -626,17 +804,48 @@ fn execute_step(state: &mut NesEmulator) {
             state.program_counter = address;
 
         },
-        0x78 => { 
-            //state.status &= StatusFlag::InterruptDisable as u8;
+        // SEI, SED, SEC. Instructions for setting flags of the status register
+        0x78 | 0xF8 | 0x38 => { 
+            let flag = match  opcode {
+                0x78 => StatusFlag::InterruptDisable,
+                0xF8 => StatusFlag::Decimal,
+                0x38 => StatusFlag::Carry,
+                _ => unreachable!()
+            };
+            state.status.set(flag);
             state.program_counter += 1;
         },
-        0x8d => {
-            let address: u16 = state.bus.get_u16_at_address(1 + state.program_counter);
-            // state.bus[address as usize] = state.accumulator;
-            print!("address modified {:#x}\n", address);
-            state.program_counter += 3;
+        // STA, STX, STY store register instructions
+        0x85 | 0x95 | 0x8D | 0x9D | 0x99 | 0x81 | 0x91 |
+        0x86 | 0x96 | 0x8E |
+        0x84 | 0x94 | 0x8C
+        => {
+            let address: u16 = match addressing {
+                AddressingMode::ZeroPage => state.bus.get_u8_at_address(1 + state.program_counter) as u16,
+                AddressingMode::ZeroPageX => state.bus.get_u8_at_address(1 + state.program_counter).wrapping_add(state.x) as u16,
+                AddressingMode::Absolute => state.bus.get_u16_at_address(1 + state.program_counter),
+                AddressingMode::AbsoluteX => state.bus.get_u16_at_address(1 + state.program_counter) + state.x as u16,
+                AddressingMode::AbsoluteY => state.bus.get_u16_at_address(1 + state.program_counter) + state.y as u16,
+                AddressingMode::IndirectX => {
+                    let address = state.bus.get_u8_at_address(1 + state.program_counter).wrapping_add(state.x) as u16;
+                    state.bus.get_u16_at_address(address)
+                },
+                AddressingMode::IndirectY => {
+                    let address = state.bus.get_u8_at_address(1 + state.program_counter) as u16;
+                    state.bus.get_u16_at_address(address) + state.y as u16
+                },
+                _ => unreachable!(),
+            };
+            let register_value = match opcode {
+                0x85 | 0x95 | 0x8D | 0x9D | 0x99 | 0x81 | 0x91 => state.accumulator,
+                0x86 | 0x96 | 0x8E => state.x,
+                0x84 | 0x94 | 0x8C => state.y,
+                _ => unreachable!()
+            };
+            state.bus.write_u8_at_address(address, register_value);
         }
         // Transfer between registers instructions 
+        // TAX | TAY | TSX | TXA | TXS | TYA
         0xAA | 0xA8 | 0xBA | 0x8A | 0x9A | 0x98 => {
             let source = match opcode {
                 0xAA | 0xA8 => state.accumulator,
@@ -652,28 +861,16 @@ fn execute_step(state: &mut NesEmulator) {
                 0x9A => &mut state.stack,
                 _ => unreachable!()
             };
-
             *destination = source;
             state.status.set_from_bool(StatusFlag::Zero, *destination == 0);
             state.status.set_from_bool(StatusFlag::Negative, (*destination >> 7) != 0);
             
         }
-        0xA9 => { 
-            state.accumulator = state.bus.get_u8_at_address(state.program_counter + 1);
-            /*
-            if state.accumulator == 0 {
-            state.status |= StatusFlag::Zero as u8
-            }
-            if state.accumulator >> 7 ==1 {
-            state.status |= StatusFlag::Negative as u8
-            }
-            */
-            state.program_counter += 2;
-        },
         _ => {
-
+            panic!("This is a bad opcode")
         }
     };
+    state.program_counter += instruction_size;
 }
 
 fn main() {
